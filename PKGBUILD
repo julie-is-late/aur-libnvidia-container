@@ -1,83 +1,73 @@
-# Maintainer: Mark Wagie <mark dot wagie at proton dot me>
+# Maintainer: Jakub Klinkovský <lahwaacz at archlinux dot org>
+# Contributor: Mark Wagie <mark dot wagie at proton dot me>
 # Contributor: Julie Shapiro <jshapiro at nvidia dot com>
 # Contributor: Kien Dang <mail at kien dot ai>
-pkgname=('libnvidia-container' 'libnvidia-container-tools')
-pkgbase=libnvidia-container
+
+pkgname=libnvidia-container
 pkgver=1.14.6
-pkgrel=1
-_nvmodver=550.54.14
-_tirpcver=1.3.2
+pkgrel=2
+_nvmodver=550.54.14  # check the VERSION in libnvidia-container/mk/nvidia-modprobe.mk
 pkgdesc="NVIDIA container runtime library"
-arch=('x86_64')
-url='https://github.com/NVIDIA/libnvidia-container'
-license=('BSD-3-Clause AND Apache-2.0 AND GPL-3.0-or-later AND LGPL-3.0-or-later AND GPL-2.0-only')
-depends=('libcap' 'libelf' 'libseccomp' 'libtirpc')
-makedepends=('bmake' 'git' 'go' 'lsb-release' 'rpcsvc-proto')
-_commit=d2eb0afe86f0b643e33624ee64f065dd60e952d4  # tags/v1.14.6^0
-source=("git+https://github.com/NVIDIA/libnvidia-container.git#commit=${_commit}"
-        "nvidia-modprobe-${_nvmodver}.tar.gz::https://github.com/NVIDIA/nvidia-modprobe/archive/${_nvmodver}.tar.gz"
-        'fix-makefile.patch'
-        'no-manual-debuginfo.patch')
-noextract=("nvidia-modprobe-${_nvmodver}.tar.gz")
-sha256sums=('SKIP'
-            '5687b0dfa6087dd480ae91e91ff1dca975794e35a2edcf9ec08d8f9cb98ef905'
-            'ca38bc4d67dc1c585a21d903dfe6dc1ca79db04320e76fff93b82b4d102896fe'
-            '4c0ffca77dee2d0c98ea92716b5c3cff0d41f974000fea29ca905435d3acbe8e')
+arch=(x86_64)
+url="https://github.com/NVIDIA/libnvidia-container"
+license=(Apache-2.0 GPL-3.0-or-later LGPL-3.0-or-later GPL-2.0-only)
+depends=(
+  glibc
+  libcap
+  libelf
+  libseccomp
+  libtirpc
+)
+makedepends=(
+  go
+  rpcsvc-proto
+)
+provides=(libnvidia-container-tools=$pkgver)
+replaces=(libnvidia-container-tools)
+# we cannot use LTO as otherwise we do not get reproducible package with full RELRO (libnvidia-container-go.so)
+options=('!lto')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        "$pkgname-nvidia-modprobe-$_nvmodver.tar.gz::https://github.com/NVIDIA/nvidia-modprobe/archive/$_nvmodver.tar.gz"
+        fix-makefile.patch)
+b2sums=('d3c526d7b04ac9cbc6b6bb63f25d4c5b17571169a6cb1a6ab9f7c1cc322a27e3a853373551682b535146914fd2eca809d02391acb458a874a7e9e5c0fc8bf459'
+        '7b334877d98d0c75d5750192dea868436938852443ced14e74e59076ed4d8be9e361cdefbe48295d87bb91ac4565152ec3f3233479b3da19bb8baf8e7ef53cd6'
+        '4938bdd72116a8f9f77e5a13a209e51332611ceb84d7e5e4155658023b6cd17c1a5e96a00c6809417092568c3558f9466c0a39c623cf31ba66351aafd724b5e5')
 
-pkgver() {
-  cd "$pkgbase"
-  git describe --tags | sed 's/^v//;s/-/+/g'
-}
+_common_make_flags=(
+  prefix=/usr
+  # the docdir contains only licenses
+  docdir=/usr/share/licenses
+  # override version variables that take defaults from git
+  GIT_TAG=$pkgver
+  REVISION=$pkgver
+)
 
-prepare(){
-  cd "$pkgbase"
+prepare() {
+  cd $pkgname-$pkgver
 
-  # NVIDIA modprobe configuration based on & mk/nvidia-modprobe.mk
-  mkdir -p "deps/src/nvidia-modprobe-${_nvmodver}"
-  bsdtar -xvf "$srcdir/nvidia-modprobe-${_nvmodver}.tar.gz" -C "deps/src/nvidia-modprobe-${_nvmodver}/" \
-    --strip-components=1 -xz "nvidia-modprobe-${_nvmodver}/modprobe-utils"
+  # nvidia-modprobe patching based on libnvidia-container/mk/nvidia-modprobe.mk
+  mkdir -p deps/src/nvidia-modprobe-$_nvmodver
+  cp -r ../nvidia-modprobe-$_nvmodver/modprobe-utils/ deps/src/nvidia-modprobe-$_nvmodver/
   touch "deps/src/nvidia-modprobe-${_nvmodver}/.download_stamp"
   patch -d "deps/src/nvidia-modprobe-${_nvmodver}" -p1 < mk/nvidia-modprobe.patch
 
+  # the Makefile needs patching due to several deficiencies:
+  # - avoid manual debuginfo files
+  # - avoid downloading external libraries (libelf and libtirpc; the WITH_TIRPC and WITH_LIBELF flags do not work)
+  # - allow to set documentation install path per Arch packaging guidelines
+  # - respect system $CGO_CFLAGS and $CGO_LDFLAGS for nvcgo, pass custom -ldflags to go build
+  # - avoid rebuilding nvcgo in the install step
   patch -Np1 -i ../fix-makefile.patch
-  patch -Np1 -i ../no-manual-debuginfo.patch
 }
 
-build(){
-  cd "$pkgbase"
-  make prefix=/usr WITH_LIBELF=yes
+build() {
+  cd $pkgname-$pkgver
+  export GOPATH="$srcdir"
+  export GOFLAGS="-mod=vendor"
+  make "${_common_make_flags[@]}" CGO_CFLAGS="$CFLAGS" CGO_LDFLAGS="$LDFLAGS" GO_LDFLAGS="-compressdwarf=false -linkmode=external"
 }
 
-package_libnvidia-container() {
-  cd "$pkgbase"
-  make prefix=/usr DESTDIR="$pkgdir" install
-
-  # remove empty leftover directory
-  rm -rf "$pkgdir/usr/lib/debug"
-
-  # remove CLI for tools
-  rm -rf "$pkgdir/usr/bin"
-
-  # remove duplicate licenses
-  rm -rf "$pkgdir/usr/share"
-
-  # install BSD-3-Clause license
-  install -Dm644 NOTICE -t "$pkgdir/usr/share/licenses/$pkgname/"
-}
-
-package_libnvidia-container-tools() {
-  pkgdesc+=" (command-line tools)"
-  depends=('libnvidia-container')
-
-  cd "$pkgbase"
-  make prefix=/usr DESTDIR="$pkgdir" install
-
-  # remove lib and include
-  rm -rf "$pkgdir"/usr/{include,lib}
-
-  # remove duplicate licenses
-  rm -rf "$pkgdir/usr/share"
-
-  # install BSD-3-Clause license
-  install -Dm644 NOTICE -t "$pkgdir/usr/share/licenses/$pkgname/"
+package() {
+  cd $pkgname-$pkgver
+  make "${_common_make_flags[@]}" DESTDIR="$pkgdir" install
 }
