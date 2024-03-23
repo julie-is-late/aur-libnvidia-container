@@ -5,7 +5,7 @@
 
 pkgname=libnvidia-container
 pkgver=1.14.6
-pkgrel=2
+pkgrel=3
 _nvmodver=550.54.14  # check the VERSION in libnvidia-container/mk/nvidia-modprobe.mk
 pkgdesc="NVIDIA container runtime library"
 arch=(x86_64)
